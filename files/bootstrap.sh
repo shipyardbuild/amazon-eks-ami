@@ -446,6 +446,9 @@ fi
 systemctl enable kubelet
 systemctl start kubelet
 
+# set +rx on `/var/lib/kubelet/plugins` so that grafana can stat() ebs-volume mounts
+sudo setfacl -R -m o:rx /var/lib/kubelet/plugins
+
 # gpu boost clock
 if  command -v nvidia-smi &>/dev/null ; then
    echo "nvidia-smi found"
