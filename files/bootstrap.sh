@@ -301,6 +301,11 @@ if [[ ! -z "${IP_FAMILY}" ]]; then
         echo "Invalid IpFamily. Only ipv4 or ipv6 are allowed"
         exit 1
   fi
+
+  if [[ "${IP_FAMILY}" == "ipv6" ]] && [[ ! -z "${B64_CLUSTER_CA}" ]] && [[ ! -z "${APISERVER_ENDPOINT}" ]] && [[ -z "${SERVICE_IPV6_CIDR}" ]]; then
+        echo "Service Ipv6 Cidr must be provided when ip-family is specified as IPV6"
+        exit 1
+  fi
 fi
 
 if [[ ! -z "${SERVICE_IPV6_CIDR}" ]]; then
@@ -382,17 +387,13 @@ sed -i s,MASTER_ENDPOINT,$APISERVER_ENDPOINT,g /var/lib/kubelet/kubeconfig
 sed -i s,AWS_REGION,$AWS_DEFAULT_REGION,g /var/lib/kubelet/kubeconfig
 ### kubelet.service configuration
 
+if [[ "${IP_FAMILY}" == "ipv6" ]]; then
+      DNS_CLUSTER_IP=$(awk -F/ '{print $1}' <<< $SERVICE_IPV6_CIDR)a
+fi
+
 MAC=$(get_meta_data 'latest/meta-data/network/interfaces/macs/' | head -n 1 | sed 's/\/$//')
 
 if [[ -z "${DNS_CLUSTER_IP}" ]]; then
-  if [[ "${IP_FAMILY}" == "ipv6" ]]; then
-    if [[ -z "${SERVICE_IPV6_CIDR}" ]]; then
-      echo "Either --service-ipv6-cidr or --cluster-dns-ip must be provided when --ip-family is set to ipv6"
-      exit 1
-    fi
-    DNS_CLUSTER_IP=$(awk -F/ '{print $1}' <<< $SERVICE_IPV6_CIDR)a
-  fi
-
   if [[ ! -z "${SERVICE_IPV4_CIDR}" ]] && [[ "${SERVICE_IPV4_CIDR}" != "None" ]] ; then
     #Sets the DNS Cluster IP address that would be chosen from the serviceIpv4Cidr. (x.y.z.10)
     DNS_CLUSTER_IP=${SERVICE_IPV4_CIDR%.*}.10
@@ -465,13 +466,17 @@ fi
 if [[ "$CONTAINER_RUNTIME" = "containerd" ]]; then
     sudo mkdir -p /etc/containerd
     sudo mkdir -p /etc/cni/net.d
+    mkdir -p /etc/systemd/system/containerd.service.d
+    cat <<EOF > /etc/systemd/system/containerd.service.d/10-compat-symlink.conf
+[Service]
+ExecStartPre=/bin/ln -sf /run/containerd/containerd.sock /run/dockershim.sock
+EOF
     sudo sed -i s,SANDBOX_IMAGE,$PAUSE_CONTAINER,g /etc/eks/containerd/containerd-config.toml
-    sudo mv /etc/eks/containerd/containerd-config.toml /etc/containerd/config.toml
-    sudo mv /etc/eks/containerd/sandbox-image.service /etc/systemd/system/sandbox-image.service
-    sudo mv /etc/eks/containerd/kubelet-containerd.service /etc/systemd/system/kubelet.service
+    sudo cp -v /etc/eks/containerd/containerd-config.toml /etc/containerd/config.toml
+    sudo cp -v /etc/eks/containerd/sandbox-image.service /etc/systemd/system/sandbox-image.service
+    sudo cp -v /etc/eks/containerd/kubelet-containerd.service /etc/systemd/system/kubelet.service
     sudo chown root:root /etc/systemd/system/kubelet.service
     sudo chown root:root /etc/systemd/system/sandbox-image.service
-    ln -sf /run/containerd/containerd.sock /run/dockershim.sock
     systemctl daemon-reload
     systemctl enable containerd
     systemctl restart containerd
@@ -481,7 +486,7 @@ if [[ "$CONTAINER_RUNTIME" = "containerd" ]]; then
 elif [[ "$CONTAINER_RUNTIME" = "dockerd" ]]; then
     mkdir -p /etc/docker
     bash -c "/sbin/iptables-save > /etc/sysconfig/iptables"
-    mv /etc/eks/iptables-restore.service /etc/systemd/system/iptables-restore.service
+    cp -v /etc/eks/iptables-restore.service /etc/systemd/system/iptables-restore.service
     sudo chown root:root /etc/systemd/system/iptables-restore.service
     systemctl daemon-reload
     systemctl enable iptables-restore
